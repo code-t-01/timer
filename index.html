@@ -1128,12 +1128,12 @@ function save() {
 function load() {
   try {
     const raw = localStorage.getItem('tq_state_v2');
-    if (!raw) return false;
+    if (!raw) return false; // 没有存档 = 首次访问，才显示示例任务
     const data = JSON.parse(raw);
-    if (data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0) {
-      state.tasks = data.tasks;
+    if (data && Array.isArray(data.tasks)) {
+      state.tasks = data.tasks; // 空列表也尊重：用户清空后保持空
       state.surplusPool = typeof data.surplusPool === 'number' ? data.surplusPool : 0;
-      nextId = data.nextId || (Math.max(0, ...state.tasks.map(t => t.id)) + 1);
+      nextId = data.nextId || (state.tasks.length ? Math.max(0, ...state.tasks.map(t => t.id)) + 1 : 100);
       return true;
     }
   } catch (e) {}
