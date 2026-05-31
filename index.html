@@ -1003,7 +1003,9 @@ function saveEdit() {
   if (totalSec <= 0) { minEl.focus(); return false; }
 
   task.name = newName;
-  task.plannedSec = totalSec;
+  // 部分完成的待办：输入的是“剩余”，计划时长 = 已跑 + 剩余；其余输入即计划时长
+  const spent = task.spentSec || 0;
+  task.plannedSec = (task.status === 'pending' && spent > 0) ? spent + totalSec : totalSec;
   state.editingTaskId = null;
   saveAndRender();
   return true;
@@ -1022,8 +1024,11 @@ function taskRowHtml(task) {
   else if (task.status === 'skipped') icon = '✕';
 
   if (task.id === state.editingTaskId) {
-    const min = Math.floor(task.plannedSec / 60);
-    const sec = task.plannedSec % 60;
+    // 编辑值 = 行内显示的时间：部分完成的待办编辑“剩余”，其余编辑“计划时长”
+    const spent = task.spentSec || 0;
+    const editBase = Math.round((task.status === 'pending' && spent > 0) ? Math.max(0, task.plannedSec - spent) : task.plannedSec);
+    const min = Math.floor(editBase / 60);
+    const sec = editBase % 60;
     return `<div class="task-item ${task.status} editing" data-id="${task.id}" data-status="${task.status}">
       <div class="task-icon">${icon}</div>
       <input type="text" class="edit-name" value="${escapeHtml(task.name)}" autocomplete="off" placeholder="任务名">
@@ -1395,7 +1400,7 @@ function onDragEnd() {
     if (paused) {
       // 1) 把当前任务这一段已跑时间提交进它自己的 spentSec —— 进度不丢，下次回来从剩余继续
       const oldActive = oldActiveId != null ? byId[oldActiveId] : null;
-      if (oldActive) oldActive.spentSec = (oldActive.spentSec || 0) + currentElapsed();
+      if (oldActive) oldActive.spentSec = Math.round((oldActive.spentSec || 0) + currentElapsed()); // 取整到秒，避免浮点误差
       // 2) 锁定盈余池当前余量
       state.surplusPool = livePool();
       // 3) 区块首位 = 新的当前任务，其余回归待办
