@@ -270,6 +270,8 @@ button:disabled {
   border: 1px solid transparent;
   transition: background 0.2s, border-color 0.2s, opacity 0.2s;
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
 }
 
 .task-item:hover:not(.editing) { background: var(--surface-2); }
@@ -333,6 +335,16 @@ body.running .task-item.active .task-icon {
   margin-left: 8px;
 }
 .task-item.active .task-planned { color: var(--text); }
+.task-planned.partial { color: var(--accent); }
+
+.task-progress-mini {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.55;
+}
 
 .task-diff {
   font-size: 11px;
@@ -376,7 +388,7 @@ body.running .task-item.active .task-icon {
   border-radius: 6px;
 }
 .task-drag:active { cursor: grabbing; }
-.task-item.pending:hover .task-drag { color: var(--text); background: var(--surface-2); }
+.task-item:hover .task-drag { color: var(--text); background: var(--surface-2); }
 
 /* 被拖动的源行 = 占位空缺 */
 .task-item.drag-source {
@@ -691,10 +703,17 @@ function currentElapsed() {
   return Math.max(0, (now - state.startTime - state.pausedAccum - pauseNow) / 1000);
 }
 
+// 当前任务“真实已用” = 它历史累计(spentSec) + 本段连续计时
+function activeSpent() {
+  const t = currentTask();
+  if (!t) return 0;
+  return (t.spentSec || 0) + currentElapsed();
+}
+
 function isOverrun() {
   const t = currentTask();
   if (!t) return false;
-  return currentElapsed() > t.plannedSec;
+  return activeSpent() > t.plannedSec;
 }
 
 function livePool() {
@@ -713,9 +732,9 @@ function totalRemaining() {
   state.tasks.forEach((t, i) => {
     if (i < state.currentIdx) return;
     if (i === state.currentIdx) {
-      sum += Math.max(0, t.plannedSec - currentElapsed());
+      sum += Math.max(0, t.plannedSec - activeSpent());
     } else if (t.status === 'pending') {
-      sum += t.plannedSec;
+      sum += Math.max(0, t.plannedSec - (t.spentSec || 0)); // 待办若有已跑进度，只算剩余
     }
   });
   return sum;
@@ -862,7 +881,7 @@ function endQueue(allDone) {
 function finishCurrent(reason) {
   const t = currentTask();
   if (!t) return;
-  const elapsed = currentElapsed();
+  const elapsed = activeSpent();
   const banked = commitTaskPool(elapsed, t.plannedSec);
   t.actualSec = elapsed;
   t.status = 'done';
@@ -882,7 +901,7 @@ function finishCurrent(reason) {
 function skipCurrent() {
   const t = currentTask();
   if (!t) return;
-  const elapsed = currentElapsed();
+  const elapsed = activeSpent();
   const banked = commitTaskPool(elapsed, t.plannedSec);
   t.actualSec = elapsed;
   t.status = 'skipped';
@@ -1031,16 +1050,27 @@ function taskRowHtml(task) {
   }
 
   const delBtn = task.status === 'pending' ? `<button class="task-delete" title="删除">×</button>` : '';
-  const lead = task.status === 'pending'
+  // 待办可拖；当前任务在“暂停”时也可拖（让后面的任务排上来顶替）
+  const draggable = task.status === 'pending' || (task.status === 'active' && !state.running);
+  const lead = draggable
     ? `<div class="task-drag" title="按住拖动排序">⠿</div>`
     : `<div class="task-icon">${icon}</div>`;
+
+  // 待办任务若已跑过一部分（被换下时存进度）→ 显示剩余时间 + 底部细进度条
+  const spent = task.spentSec || 0;
+  const isPartial = task.status === 'pending' && spent > 0;
+  const timeText = isPartial ? fmt(Math.max(0, task.plannedSec - spent)) : fmt(task.plannedSec);
+  const miniBar = isPartial
+    ? `<div class="task-progress-mini" style="width:${Math.min(100, spent / task.plannedSec * 100)}%"></div>`
+    : '';
 
   return `<div class="task-item ${task.status}" data-id="${task.id}" data-status="${task.status}">
     ${lead}
     <div class="task-name">${escapeHtml(task.name)}</div>
-    <div class="task-planned">${fmt(task.plannedSec)}</div>
+    <div class="task-planned${isPartial ? ' partial' : ''}">${timeText}</div>
     ${diffLabel}
     ${delBtn}
+    ${miniBar}
   </div>`;
 }
 
@@ -1109,7 +1139,7 @@ function renderTick() {
   const poolValue = livePool();
 
   if (t) {
-    const elapsed = currentElapsed();
+    const elapsed = activeSpent();
     els.currentTaskName.textContent = t.name;
     els.currentTaskName.classList.remove('empty');
     if (overrun) {
@@ -1179,7 +1209,7 @@ function load() {
     if (!raw) return false; // 没有存档 = 首次访问，才显示示例任务
     const data = JSON.parse(raw);
     if (data && Array.isArray(data.tasks)) {
-      state.tasks = data.tasks; // 空列表也尊重：用户清空后保持空
+      state.tasks = data.tasks.map(t => ({ ...t, spentSec: 0 })); // 空列表也尊重；重新加载视为新一轮，清掉临时进度
       state.surplusPool = typeof data.surplusPool === 'number' ? data.surplusPool : 0;
       nextId = data.nextId || (state.tasks.length ? Math.max(0, ...state.tasks.map(t => t.id)) + 1 : 100);
       return true;
@@ -1195,7 +1225,7 @@ setInterval(() => {
   if (state.running && currentTask()) {
     const t = currentTask();
     const now = Date.now();
-    const elapsed = currentElapsed();
+    const elapsed = activeSpent();
     const inOverrun = elapsed > t.plannedSec;
 
     if (inOverrun && state.taskLastTickTime !== null) {
@@ -1275,10 +1305,12 @@ els.queueList.addEventListener('keydown', e => {
 let drag = null;
 let autoScrollRAF = null;
 
-function pendingRows() {
-  return [...els.queueList.children].filter(
-    el => el.classList && el.classList.contains('task-item') && el.dataset.status === 'pending'
-  );
+function reorderableRows() {
+  return [...els.queueList.children].filter(el => {
+    if (!el.classList || !el.classList.contains('task-item')) return false;
+    const s = el.dataset.status;
+    return s === 'pending' || (s === 'active' && !state.running); // 暂停时当前任务也可参与排序
+  });
 }
 
 function positionClone(x, y) {
@@ -1289,7 +1321,7 @@ function positionClone(x, y) {
 function updateDrag(x, y) {
   if (!drag) return;
   positionClone(x, y);
-  const others = pendingRows().filter(el => el !== drag.sourceRow);
+  const others = reorderableRows().filter(el => el !== drag.sourceRow);
   let target = null;
   for (const r of others) {
     const rc = r.getBoundingClientRect();
@@ -1344,12 +1376,40 @@ function onDragEnd() {
   drag.sourceRow.classList.remove('drag-source');
 
   if (drag.moved) {
-    const newOrder = pendingRows().map(el => parseInt(el.dataset.id));
+    // 读取可排序区块的新顺序（DOM 顺序）
+    const region = reorderableRows().map(el => parseInt(el.dataset.id));
     const byId = {};
-    state.tasks.forEach(t => { if (t.status === 'pending') byId[t.id] = t; });
-    const reordered = newOrder.map(id => byId[id]).filter(Boolean);
-    let p = 0;
-    state.tasks = state.tasks.map(t => (t.status === 'pending' ? reordered[p++] : t));
+    state.tasks.forEach(t => { byId[t.id] = t; });
+    const reordered = region.map(id => byId[id]).filter(Boolean);
+
+    const paused = state.currentIdx >= 0 && !state.running;
+    // 可排序区块在数组中的起始下标
+    let startIdx;
+    if (paused) startIdx = state.currentIdx;               // 暂停：当前任务一起参与
+    else if (state.currentIdx >= 0) startIdx = state.currentIdx + 1; // 运行中：只排后面的待办
+    else startIdx = 0;                                     // 空闲：全部
+
+    const oldActiveId = state.currentIdx >= 0 ? state.tasks[state.currentIdx].id : null;
+    state.tasks = state.tasks.slice(0, startIdx).concat(reordered);
+
+    if (paused) {
+      // 1) 把当前任务这一段已跑时间提交进它自己的 spentSec —— 进度不丢，下次回来从剩余继续
+      const oldActive = oldActiveId != null ? byId[oldActiveId] : null;
+      if (oldActive) oldActive.spentSec = (oldActive.spentSec || 0) + currentElapsed();
+      // 2) 锁定盈余池当前余量
+      state.surplusPool = livePool();
+      // 3) 区块首位 = 新的当前任务，其余回归待办
+      for (let i = startIdx; i < state.tasks.length; i++) {
+        state.tasks[i].status = (i === state.currentIdx) ? 'active' : 'pending';
+      }
+      // 4) 新当前任务“本段”从 0 起；它自己的历史进度在它的 spentSec 里续上
+      const t0 = Date.now();
+      state.startTime = t0;
+      state.pauseStartTime = t0;
+      state.pausedAccum = 0;
+      resetTaskPool();
+    }
+
     state.suppressClick = true;
     vibrate(15);
     state.dragging = false;
@@ -1365,7 +1425,10 @@ els.queueList.addEventListener('pointerdown', e => {
   const handle = e.target.closest('.task-drag');
   if (!handle) return;
   const row = handle.closest('.task-item');
-  if (!row || row.dataset.status !== 'pending') return;
+  if (!row) return;
+  const s = row.dataset.status;
+  const canDrag = s === 'pending' || (s === 'active' && !state.running);
+  if (!canDrag) return;
   e.preventDefault();
 
   const rect = row.getBoundingClientRect();
