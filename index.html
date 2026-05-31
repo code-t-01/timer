@@ -358,6 +358,48 @@ body.running .task-item.active .task-icon {
 }
 .task-delete:hover { color: var(--warn); background: var(--warn-dim); }
 
+/* ---------- Drag handle / reorder ---------- */
+.task-drag {
+  width: 26px;
+  height: 30px;
+  margin: -4px 8px -4px -3px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;        /* 触摸手柄拖动时不触发页面滚动 */
+  user-select: none;
+  border-radius: 6px;
+}
+.task-drag:active { cursor: grabbing; }
+.task-item.pending:hover .task-drag { color: var(--text); background: var(--surface-2); }
+
+/* 被拖动的源行 = 占位空缺 */
+.task-item.drag-source {
+  opacity: 0.35;
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+/* 跟随手指的浮动副本 */
+.drag-clone {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 200;
+  margin: 0 !important;
+  pointer-events: none;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--accent) !important;
+  box-shadow: 0 16px 38px rgba(0,0,0,0.55);
+  opacity: 0.97;
+}
+
 /* ---------- Inline edit row ---------- */
 .task-item.editing {
   background: var(--surface-2);
@@ -593,6 +635,9 @@ const state = {
   taskLastTickTime: null,
   // Inline edit
   editingTaskId: null,
+  // Drag reorder
+  dragging: false,
+  suppressClick: false,
 };
 let nextId = 100;
 
@@ -960,7 +1005,7 @@ function taskRowHtml(task) {
   if (task.id === state.editingTaskId) {
     const min = Math.floor(task.plannedSec / 60);
     const sec = task.plannedSec % 60;
-    return `<div class="task-item ${task.status} editing" data-id="${task.id}">
+    return `<div class="task-item ${task.status} editing" data-id="${task.id}" data-status="${task.status}">
       <div class="task-icon">${icon}</div>
       <input type="text" class="edit-name" value="${escapeHtml(task.name)}" autocomplete="off" placeholder="任务名">
       <input type="number" class="edit-min" min="0" step="1" value="${min}">
@@ -986,9 +1031,12 @@ function taskRowHtml(task) {
   }
 
   const delBtn = task.status === 'pending' ? `<button class="task-delete" title="删除">×</button>` : '';
+  const lead = task.status === 'pending'
+    ? `<div class="task-drag" title="按住拖动排序">⠿</div>`
+    : `<div class="task-icon">${icon}</div>`;
 
-  return `<div class="task-item ${task.status}" data-id="${task.id}">
-    <div class="task-icon">${icon}</div>
+  return `<div class="task-item ${task.status}" data-id="${task.id}" data-status="${task.status}">
+    ${lead}
     <div class="task-name">${escapeHtml(task.name)}</div>
     <div class="task-planned">${fmt(task.plannedSec)}</div>
     ${diffLabel}
@@ -1157,8 +1205,8 @@ setInterval(() => {
     state.taskLastTickTime = now;
 
     const poolLeft = state.taskInitialPool - state.taskPoolConsumed;
-    if (elapsed >= t.plannedSec && poolLeft <= 0.05) {
-      finishCurrent('timeout');
+    if (elapsed >= t.plannedSec && poolLeft <= 0.05 && !state.dragging) {
+      finishCurrent('timeout'); // 拖动期间推迟强制切换，避免重建队列打断拖拽
       return;
     }
     renderTick();
@@ -1181,6 +1229,8 @@ els.btnAdd.addEventListener('click', addTask);
 // Queue list — delegated click for edit / save / cancel / delete
 els.queueList.addEventListener('click', e => {
   const t = e.target;
+  if (state.suppressClick) { state.suppressClick = false; return; } // 刚拖动完，吞掉这次点击
+  if (t.closest('.task-drag')) return;                              // 点手柄不进入编辑
   if (t.classList.contains('edit-save')) {
     e.stopPropagation();
     saveEdit();
@@ -1220,6 +1270,130 @@ els.queueList.addEventListener('keydown', e => {
     cancelEdit();
   }
 });
+
+// ---------- Drag-to-reorder (pending tasks only) ----------
+let drag = null;
+let autoScrollRAF = null;
+
+function pendingRows() {
+  return [...els.queueList.children].filter(
+    el => el.classList && el.classList.contains('task-item') && el.dataset.status === 'pending'
+  );
+}
+
+function positionClone(x, y) {
+  if (!drag) return;
+  drag.clone.style.transform = `translate(${x - drag.grabDX}px, ${y - drag.grabDY}px) scale(1.03)`;
+}
+
+function updateDrag(x, y) {
+  if (!drag) return;
+  positionClone(x, y);
+  const others = pendingRows().filter(el => el !== drag.sourceRow);
+  let target = null;
+  for (const r of others) {
+    const rc = r.getBoundingClientRect();
+    if (y < rc.top + rc.height / 2) { target = r; break; }
+  }
+  if (target) {
+    if (drag.sourceRow.nextSibling !== target) els.queueList.insertBefore(drag.sourceRow, target);
+  } else {
+    const last = others[others.length - 1];
+    if (last && last.nextSibling !== drag.sourceRow) {
+      els.queueList.insertBefore(drag.sourceRow, last.nextSibling);
+    }
+  }
+}
+
+function autoScrollStep() {
+  if (!drag) { autoScrollRAF = null; return; }
+  const y = drag.lastY, margin = 70, speed = 11;
+  let dir = 0;
+  if (y < margin) dir = -1;
+  else if (y > window.innerHeight - margin) dir = 1;
+  if (dir === 0) { autoScrollRAF = null; return; }
+  window.scrollBy(0, dir * speed);
+  updateDrag(drag.lastX, drag.lastY);
+  autoScrollRAF = requestAnimationFrame(autoScrollStep);
+}
+
+function maybeAutoScroll() {
+  if (!drag || autoScrollRAF) return;
+  const y = drag.lastY;
+  if (y < 70 || y > window.innerHeight - 70) autoScrollRAF = requestAnimationFrame(autoScrollStep);
+}
+
+function onDragMove(e) {
+  if (!drag) return;
+  e.preventDefault();
+  drag.lastX = e.clientX;
+  drag.lastY = e.clientY;
+  if (Math.abs(e.clientY - drag.startY) > 4) drag.moved = true;
+  updateDrag(e.clientX, e.clientY);
+  maybeAutoScroll();
+}
+
+function onDragEnd() {
+  if (!drag) return;
+  document.removeEventListener('pointermove', onDragMove);
+  document.removeEventListener('pointerup', onDragEnd);
+  document.removeEventListener('pointercancel', onDragEnd);
+  if (autoScrollRAF) { cancelAnimationFrame(autoScrollRAF); autoScrollRAF = null; }
+
+  drag.clone.remove();
+  drag.sourceRow.classList.remove('drag-source');
+
+  if (drag.moved) {
+    const newOrder = pendingRows().map(el => parseInt(el.dataset.id));
+    const byId = {};
+    state.tasks.forEach(t => { if (t.status === 'pending') byId[t.id] = t; });
+    const reordered = newOrder.map(id => byId[id]).filter(Boolean);
+    let p = 0;
+    state.tasks = state.tasks.map(t => (t.status === 'pending' ? reordered[p++] : t));
+    state.suppressClick = true;
+    vibrate(15);
+    state.dragging = false;
+    drag = null;
+    saveAndRender();
+    return;
+  }
+  state.dragging = false;
+  drag = null;
+}
+
+els.queueList.addEventListener('pointerdown', e => {
+  const handle = e.target.closest('.task-drag');
+  if (!handle) return;
+  const row = handle.closest('.task-item');
+  if (!row || row.dataset.status !== 'pending') return;
+  e.preventDefault();
+
+  const rect = row.getBoundingClientRect();
+  const clone = row.cloneNode(true);
+  clone.classList.add('drag-clone');
+  clone.classList.remove('drag-source');
+  clone.style.width = rect.width + 'px';
+  clone.style.height = rect.height + 'px';
+  document.body.appendChild(clone);
+
+  drag = {
+    sourceRow: row,
+    clone,
+    grabDX: e.clientX - rect.left,
+    grabDY: e.clientY - rect.top,
+    startY: e.clientY,
+    lastX: e.clientX,
+    lastY: e.clientY,
+    moved: false,
+  };
+  positionClone(e.clientX, e.clientY);
+  row.classList.add('drag-source');
+  state.dragging = true;
+
+  document.addEventListener('pointermove', onDragMove, { passive: false });
+  document.addEventListener('pointerup', onDragEnd);
+  document.addEventListener('pointercancel', onDragEnd);
+}, { passive: false });
 
 // Wake lock (best-effort)
 let wakeLock = null;
