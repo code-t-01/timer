@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>计时队列</title>
+<style>
+:root {
+  --bg: #0a0e14;
+  --surface: #131822;
+  --surface-2: #1c2331;
+  --border: #2a3240;
+  --text: #e8eef5;
+  --muted: #8593a8;
+  --accent: #60d394;
+  --accent-dim: rgba(96, 211, 148, 0.15);
+  --warn: #f97066;
+  --warn-dim: rgba(249, 112, 102, 0.12);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
+  font-size: 16px;
+  min-height: 100vh;
+  overscroll-behavior: none;
+}
+
+body {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 20px 16px 100px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 20px;
+}
+
+h1 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.totals-mini {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ---------- Timer display ---------- */
+.timer-display {
+  background: var(--surface);
+  border-radius: 20px;
+  padding: 26px 24px 20px;
+  text-align: center;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.timer-display.overtime {
+  border-color: var(--warn);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--warn-dim) 200%);
+}
+
+.current-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 10px;
+}
+
+.timer-display.overtime .current-label { color: var(--warn); }
+
+.current-task-name {
+  font-size: 20px;
+  font-weight: 500;
+  margin-bottom: 18px;
+  min-height: 1.2em;
+}
+
+.current-task-name.empty {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.countdown {
+  font-size: 78px;
+  font-weight: 200;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -3px;
+  line-height: 1;
+  margin-bottom: 16px;
+}
+
+.timer-display.overtime .countdown {
+  color: var(--warn);
+}
+
+.progress-bar {
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+  border-radius: 2px;
+}
+
+.timer-display.overtime .progress-bar-fill { background: var(--warn); }
+
+/* Pool indicator */
+.pool {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  margin-bottom: 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--surface-2);
+  transition: color 0.25s, background 0.25s, transform 0.2s;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+
+.pool-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.pool-label {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+.pool.positive { color: var(--accent); background: var(--accent-dim); }
+.pool.positive .pool-dot { opacity: 1; }
+
+.pool.draining { color: var(--warn); background: var(--warn-dim); }
+.pool.draining .pool-dot {
+  opacity: 1;
+  animation: pool-pulse 0.7s ease-in-out infinite;
+}
+
+@keyframes pool-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.4; }
+}
+
+.pool.bank-flash {
+  animation: bank-flash 0.85s ease-out;
+}
+
+@keyframes bank-flash {
+  0%   { transform: scale(1);    box-shadow: 0 0 0 0 var(--accent); }
+  35%  { transform: scale(1.18); box-shadow: 0 0 0 10px rgba(96,211,148,0); }
+  100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(96,211,148,0); }
+}
+
+.totals {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.totals .stat .label {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 3px;
+}
+.totals .stat .value {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 15px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Controls ---------- */
+.controls {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 26px;
+}
+
+button {
+  font-family: inherit;
+  font-size: 14px;
+  border: none;
+  border-radius: 12px;
+  padding: 15px 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, transform 0.08s, opacity 0.15s;
+}
+
+button:active { transform: scale(0.96); }
+button:hover:not(:disabled) { background: var(--border); }
+button.primary {
+  background: var(--accent);
+  color: #0a0e14;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: #7de3a8; }
+button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ---------- Queue ---------- */
+.queue { margin-bottom: 20px; }
+
+.queue-title {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.queue-title button {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  letter-spacing: 0.5px;
+}
+.queue-title button:hover { color: var(--warn); border-color: var(--warn-dim); }
+
+.task-item {
+  display: flex;
+  align-items: center;
+  padding: 13px 14px;
+  background: var(--surface);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  font-size: 15px;
+  border: 1px solid transparent;
+  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+  cursor: pointer;
+}
+
+.task-item:hover:not(.editing) { background: var(--surface-2); }
+
+.task-item.active {
+  border-color: var(--accent);
+  background: linear-gradient(90deg, var(--accent-dim) 0%, var(--surface) 60%);
+}
+
+.task-item.done, .task-item.skipped { opacity: 0.55; }
+.task-item.done .task-name { text-decoration: line-through; text-decoration-color: var(--muted); }
+.task-item.skipped .task-name { color: var(--muted); }
+
+.task-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  margin-right: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.task-item.active .task-icon {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #0a0e14;
+}
+
+body.running .task-item.active .task-icon {
+  animation: task-active-pulse 1.4s ease-out infinite;
+}
+
+@keyframes task-active-pulse {
+  0%   { transform: scale(1);    box-shadow: 0 0 0 0 rgba(96, 211, 148, 0.65); }
+  70%  { transform: scale(1.08); box-shadow: 0 0 0 7px rgba(96, 211, 148, 0); }
+  100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(96, 211, 148, 0); }
+}
+
+.task-item.done .task-icon { border-color: var(--accent); color: var(--accent); }
+.task-item.skipped .task-icon { border-color: var(--muted); color: var(--muted); }
+
+.task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-planned {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 8px;
+}
+.task-item.active .task-planned { color: var(--text); }
+
+.task-diff {
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.task-diff.over { color: var(--warn); background: var(--warn-dim); }
+.task-diff.under { color: var(--accent); background: var(--accent-dim); }
+.task-diff.zero { color: var(--muted); }
+
+.task-delete {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 18px;
+  margin-left: 4px;
+  border-radius: 6px;
+}
+.task-delete:hover { color: var(--warn); background: var(--warn-dim); }
+
+/* ---------- Inline edit row ---------- */
+.task-item.editing {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  padding: 10px 12px;
+  cursor: default;
+}
+
+.task-item.editing input {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 6px 4px;
+  outline: none;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.task-item.editing input:focus { border-bottom-color: var(--accent); }
+
+.task-item.editing input.edit-name {
+  flex: 1;
+  margin-right: 4px;
+}
+
+.task-item.editing input.edit-min,
+.task-item.editing input.edit-sec {
+  width: 36px;
+  text-align: right;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+
+.task-item.editing input::-webkit-outer-spin-button,
+.task-item.editing input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.task-item.editing .unit-edit {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0 4px;
+}
+
+.task-item.editing button {
+  padding: 6px 10px;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-left: 4px;
+}
+
+.task-item.editing .edit-save {
+  color: var(--accent);
+  border-color: rgba(96, 211, 148, 0.35);
+}
+.task-item.editing .edit-save:hover { background: var(--accent-dim); }
+
+.task-item.editing .edit-cancel { color: var(--muted); }
+.task-item.editing .edit-cancel:hover { color: var(--warn); border-color: var(--warn-dim); }
+
+/* ---------- Add task ---------- */
+.add-task {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 6px;
+  border: 1px solid var(--border);
+}
+
+.add-task input {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  padding: 10px 6px;
+  outline: none;
+  min-width: 0;
+}
+
+.add-task input[type=text] { flex: 1; }
+.add-task input[type=number] {
+  width: 44px;
+  text-align: right;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.add-task input[type=number]::-webkit-outer-spin-button,
+.add-task input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.add-task .unit {
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.add-task button {
+  padding: 10px 14px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 14px;
+  border-radius: 9px;
+}
+
+.add-task button:hover { background: rgba(96, 211, 148, 0.25); }
+
+/* ---------- Banner ---------- */
+.banner {
+  position: fixed;
+  bottom: 20px;
+  left: 16px;
+  right: 16px;
+  max-width: 448px;
+  margin: 0 auto;
+  background: var(--accent);
+  color: #0a0e14;
+  padding: 13px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  transform: translateY(150%);
+  transition: transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+  z-index: 100;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+}
+
+.banner.show { transform: translateY(0); }
+
+/* ---------- Empty state ---------- */
+.empty-queue {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* Pulse animation when running */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.running .current-label::before {
+  content: '● ';
+  color: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.timer-display.overtime .current-label::before { color: var(--warn) !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>计时队列</h1>
+  <div class="totals-mini" id="header-totals">— 项</div>
+</header>
+
+<div class="timer-display" id="timer-display">
+  <div class="current-label" id="current-label">就绪</div>
+  <div class="current-task-name empty" id="current-task-name">添加任务后开始</div>
+  <div class="countdown" id="countdown">00:00</div>
+  <div class="progress-bar"><div class="progress-bar-fill" id="progress-fill" style="width: 0%"></div></div>
+  <div class="pool" id="pool">
+    <span class="pool-dot"></span>
+    <span class="pool-label">盈余池</span>
+    <span class="pool-value" id="pool-value">0:00</span>
+  </div>
+  <div class="totals">
+    <div class="stat"><span class="label">已用</span><span class="value" id="elapsed">00:00</span></div>
+    <div class="stat"><span class="label">总剩余</span><span class="value" id="total-remaining">00:00</span></div>
+    <div class="stat"><span class="label">进度</span><span class="value" id="progress-count">0/0</span></div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="primary" id="btn-toggle">▶ 开始</button>
+  <button id="btn-done" title="提前完成">✓ 完成</button>
+  <button id="btn-extend" title="+1 分钟">+1</button>
+  <button id="btn-skip" title="跳过当前">⏭</button>
+</div>
+
+<div class="queue">
+  <div class="queue-title">
+    <span>队列 · 点击编辑</span>
+    <button id="btn-clear">清空</button>
+  </div>
+  <div id="queue-list"></div>
+</div>
+
+<div class="add-task">
+  <input type="text" id="input-name" placeholder="任务名" autocomplete="off">
+  <input type="number" id="input-minutes" placeholder="0" min="0" step="1">
+  <span class="unit">分</span>
+  <input type="number" id="input-seconds" placeholder="0" min="0" max="59" step="5">
+  <span class="unit">秒</span>
+  <button id="btn-add">添加</button>
+</div>
+
+<div class="banner" id="banner">下一项！</div>
+
+<script>
+// ---------- State ----------
+const state = {
+  tasks: [
+    { id: 1, name: '准备 / 整理桌面', plannedSec: 30, actualSec: 0, status: 'pending' },
+    { id: 2, name: '深度工作', plannedSec: 60, actualSec: 0, status: 'pending' },
+    { id: 3, name: '回邮件', plannedSec: 45, actualSec: 0, status: 'pending' },
+    { id: 4, name: '复盘 & 记录', plannedSec: 30, actualSec: 0, status: 'pending' },
+  ],
+  currentIdx: -1,
+  running: false,
+  startTime: null,
+  pausedAccum: 0,
+  pauseStartTime: null,
+  // Surplus pool (seconds)
+  surplusPool: 0,
+  taskInitialPool: 0,
+  taskPoolConsumed: 0,
+  taskLastTickTime: null,
+  // Inline edit
+  editingTaskId: null,
+};
+let nextId = 100;
+
+// ---------- DOM ----------
+const $ = id => document.getElementById(id);
+const els = {
+  body: document.body,
+  timerDisplay: $('timer-display'),
+  currentLabel: $('current-label'),
+  currentTaskName: $('current-task-name'),
+  countdown: $('countdown'),
+  progressFill: $('progress-fill'),
+  pool: $('pool'),
+  poolValue: $('pool-value'),
+  elapsed: $('elapsed'),
+  totalRemaining: $('total-remaining'),
+  progressCount: $('progress-count'),
+  headerTotals: $('header-totals'),
+  btnToggle: $('btn-toggle'),
+  btnDone: $('btn-done'),
+  btnExtend: $('btn-extend'),
+  btnSkip: $('btn-skip'),
+  btnClear: $('btn-clear'),
+  btnAdd: $('btn-add'),
+  inputName: $('input-name'),
+  inputMin: $('input-minutes'),
+  inputSec: $('input-seconds'),
+  queueList: $('queue-list'),
+  banner: $('banner'),
+};
+
+// ---------- Utilities ----------
+function fmt(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const pad = n => String(n).padStart(2, '0');
+  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+  return `${pad(m)}:${pad(s)}`;
+}
+
+function currentTask() {
+  return state.currentIdx >= 0 ? state.tasks[state.currentIdx] : null;
+}
+
+function currentElapsed() {
+  if (state.currentIdx < 0 || !state.startTime) return 0;
+  const now = Date.now();
+  const pauseNow = state.pauseStartTime ? (now - state.pauseStartTime) : 0;
+  return Math.max(0, (now - state.startTime - state.pausedAccum - pauseNow) / 1000);
+}
+
+function isOverrun() {
+  const t = currentTask();
+  if (!t) return false;
+  return currentElapsed() > t.plannedSec;
+}
+
+function livePool() {
+  if (state.currentIdx >= 0) {
+    return Math.max(0, state.taskInitialPool - state.taskPoolConsumed);
+  }
+  return state.surplusPool;
+}
+
+function totalPlanned() {
+  return state.tasks.reduce((s, t) => s + t.plannedSec, 0);
+}
+
+function totalRemaining() {
+  let sum = 0;
+  state.tasks.forEach((t, i) => {
+    if (i < state.currentIdx) return;
+    if (i === state.currentIdx) {
+      sum += Math.max(0, t.plannedSec - currentElapsed());
+    } else if (t.status === 'pending') {
+      sum += t.plannedSec;
+    }
+  });
+  return sum;
+}
+
+function completedCount() {
+  return state.tasks.filter(t => t.status === 'done' || t.status === 'skipped').length;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- Audio / feedback ----------
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function chime(type = 'next') {
+  ensureAudio();
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const tones = type === 'done' ? [659, 880, 1175] : [659, 988];
+  tones.forEach((freq, i) => {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0, now + i * 0.16);
+    g.gain.linearRampToValueAtTime(0.28, now + i * 0.16 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.16 + 0.45);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(now + i * 0.16);
+    o.stop(now + i * 0.16 + 0.5);
+  });
+}
+
+function vibrate(pattern) {
+  if (navigator.vibrate) try { navigator.vibrate(pattern); } catch(e) {}
+}
+
+let bannerTimer = null;
+function notify(text) {
+  els.banner.textContent = text;
+  els.banner.classList.add('show');
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => els.banner.classList.remove('show'), 2400);
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification('计时队列', { body: text, silent: true }); } catch(e) {}
+  }
+}
+
+function flashPool() {
+  els.pool.classList.remove('bank-flash');
+  void els.pool.offsetWidth;
+  els.pool.classList.add('bank-flash');
+}
+
+// ---------- Pool accounting ----------
+function commitTaskPool(elapsed, plannedSec) {
+  const surplus = elapsed < plannedSec ? (plannedSec - elapsed) : 0;
+  state.surplusPool = Math.max(0, state.taskInitialPool - state.taskPoolConsumed + surplus);
+  return surplus;
+}
+
+function resetTaskPool() {
+  state.taskInitialPool = state.surplusPool;
+  state.taskPoolConsumed = 0;
+  state.taskLastTickTime = null;
+}
+
+// ---------- Control flow ----------
+function startQueue() {
+  if (state.tasks.length === 0) return;
+  if (state.currentIdx === -1) {
+    const idx = state.tasks.findIndex(t => t.status === 'pending');
+    if (idx === -1) return;
+    state.currentIdx = idx;
+    state.tasks[idx].status = 'active';
+    state.startTime = Date.now();
+    state.pausedAccum = 0;
+    state.pauseStartTime = null;
+    resetTaskPool();
+  } else if (state.pauseStartTime) {
+    state.pausedAccum += Date.now() - state.pauseStartTime;
+    state.pauseStartTime = null;
+    state.taskLastTickTime = null;
+  }
+  state.running = true;
+  ensureAudio();
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+  saveAndRender();
+}
+
+function pauseQueue() {
+  if (!state.running) return;
+  state.running = false;
+  state.pauseStartTime = Date.now();
+  state.taskLastTickTime = null;
+  saveAndRender();
+}
+
+function advanceTo(nextIdx, reason) {
+  state.currentIdx = nextIdx;
+  state.tasks[nextIdx].status = 'active';
+  state.startTime = Date.now();
+  state.pausedAccum = 0;
+  state.pauseStartTime = null;
+  resetTaskPool();
+  if (reason === 'timeout') {
+    chime('next');
+    vibrate([120, 60, 120, 60, 240]);
+    notify(`⏱ 到点 → ${state.tasks[nextIdx].name}`);
+  } else {
+    chime('next');
+    vibrate(40);
+    notify(`下一项：${state.tasks[nextIdx].name}`);
+  }
+}
+
+function endQueue(allDone) {
+  state.currentIdx = -1;
+  state.running = false;
+  state.startTime = null;
+  state.pausedAccum = 0;
+  state.pauseStartTime = null;
+  state.taskInitialPool = 0;
+  state.taskPoolConsumed = 0;
+  state.taskLastTickTime = null;
+  if (allDone) {
+    chime('done');
+    vibrate([200, 100, 200, 100, 400]);
+    const poolNote = state.surplusPool > 0 ? ` (剩余盈余 +${fmt(state.surplusPool)})` : '';
+    notify(`全部完成 🎉${poolNote}`);
+  }
+}
+
+function finishCurrent(reason) {
+  const t = currentTask();
+  if (!t) return;
+  const elapsed = currentElapsed();
+  const banked = commitTaskPool(elapsed, t.plannedSec);
+  t.actualSec = elapsed;
+  t.status = 'done';
+  const nextIdx = state.tasks.findIndex((tt, i) => i > state.currentIdx && tt.status === 'pending');
+  if (nextIdx === -1) {
+    endQueue(true);
+  } else {
+    advanceTo(nextIdx, reason);
+    if (banked > 0 && reason !== 'timeout') {
+      notify(`✓ 提前完成 (+${fmt(banked)} 入池) → ${state.tasks[nextIdx].name}`);
+    }
+  }
+  if (banked > 0) flashPool();
+  saveAndRender();
+}
+
+function skipCurrent() {
+  const t = currentTask();
+  if (!t) return;
+  const elapsed = currentElapsed();
+  const banked = commitTaskPool(elapsed, t.plannedSec);
+  t.actualSec = elapsed;
+  t.status = 'skipped';
+  const nextIdx = state.tasks.findIndex((tt, i) => i > state.currentIdx && tt.status === 'pending');
+  if (nextIdx === -1) {
+    endQueue(false);
+    notify('队列结束');
+  } else {
+    advanceTo(nextIdx, 'manual');
+    if (banked > 0) {
+      notify(`⏭ 已跳过 (+${fmt(banked)} 入池) → ${state.tasks[nextIdx].name}`);
+    }
+  }
+  if (banked > 0) flashPool();
+  saveAndRender();
+}
+
+function extendCurrent() {
+  const t = currentTask();
+  if (!t) return;
+  t.plannedSec += 60;
+  vibrate(20);
+  saveAndRender();
+}
+
+function clearAll() {
+  if (!confirm('清空全部任务？盈余池也会清零。')) return;
+  state.tasks = [];
+  state.currentIdx = -1;
+  state.running = false;
+  state.startTime = null;
+  state.pausedAccum = 0;
+  state.pauseStartTime = null;
+  state.surplusPool = 0;
+  state.taskInitialPool = 0;
+  state.taskPoolConsumed = 0;
+  state.taskLastTickTime = null;
+  state.editingTaskId = null;
+  saveAndRender();
+}
+
+function addTask() {
+  const name = els.inputName.value.trim();
+  const min = parseInt(els.inputMin.value) || 0;
+  const sec = parseInt(els.inputSec.value) || 0;
+  const totalSec = min * 60 + sec;
+  if (!name || totalSec <= 0) {
+    if (!name) els.inputName.focus(); else els.inputMin.focus();
+    return;
+  }
+  state.tasks.push({ id: nextId++, name, plannedSec: totalSec, actualSec: 0, status: 'pending' });
+  els.inputName.value = '';
+  els.inputMin.value = '';
+  els.inputSec.value = '';
+  els.inputName.focus();
+  saveAndRender();
+}
+
+function deleteTask(id) {
+  const idx = state.tasks.findIndex(t => t.id === id);
+  if (idx === -1 || idx === state.currentIdx) return;
+  state.tasks.splice(idx, 1);
+  if (idx < state.currentIdx) state.currentIdx--;
+  if (state.editingTaskId === id) state.editingTaskId = null;
+  saveAndRender();
+}
+
+// ---------- Inline edit ----------
+function startEdit(taskId) {
+  state.editingTaskId = taskId;
+  renderQueue();
+  requestAnimationFrame(() => {
+    const row = els.queueList.querySelector(`.task-item[data-id="${taskId}"]`);
+    if (row) {
+      const nameEl = row.querySelector('.edit-name');
+      if (nameEl) { nameEl.focus(); nameEl.select(); }
+    }
+  });
+}
+
+function saveEdit() {
+  if (state.editingTaskId === null) return true;
+  const taskId = state.editingTaskId;
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) { state.editingTaskId = null; renderQueue(); return true; }
+
+  const row = els.queueList.querySelector(`.task-item[data-id="${taskId}"]`);
+  if (!row) { state.editingTaskId = null; renderQueue(); return true; }
+
+  const nameEl = row.querySelector('.edit-name');
+  const minEl = row.querySelector('.edit-min');
+  const secEl = row.querySelector('.edit-sec');
+  const newName = nameEl.value.trim();
+  const min = parseInt(minEl.value) || 0;
+  const sec = parseInt(secEl.value) || 0;
+  const totalSec = min * 60 + sec;
+
+  if (!newName) { nameEl.focus(); return false; }
+  if (totalSec <= 0) { minEl.focus(); return false; }
+
+  task.name = newName;
+  task.plannedSec = totalSec;
+  state.editingTaskId = null;
+  saveAndRender();
+  return true;
+}
+
+function cancelEdit() {
+  state.editingTaskId = null;
+  renderQueue();
+}
+
+// ---------- Render ----------
+function taskRowHtml(task) {
+  let icon = '○';
+  if (task.status === 'active') icon = '▶';
+  else if (task.status === 'done') icon = '✓';
+  else if (task.status === 'skipped') icon = '✕';
+
+  if (task.id === state.editingTaskId) {
+    const min = Math.floor(task.plannedSec / 60);
+    const sec = task.plannedSec % 60;
+    return `<div class="task-item ${task.status} editing" data-id="${task.id}">
+      <div class="task-icon">${icon}</div>
+      <input type="text" class="edit-name" value="${escapeHtml(task.name)}" autocomplete="off" placeholder="任务名">
+      <input type="number" class="edit-min" min="0" step="1" value="${min}">
+      <span class="unit-edit">分</span>
+      <input type="number" class="edit-sec" min="0" max="59" step="5" value="${sec}">
+      <span class="unit-edit">秒</span>
+      <button class="edit-save" title="保存 (Enter)">✓</button>
+      <button class="edit-cancel" title="取消 (Esc)">×</button>
+    </div>`;
+  }
+
+  let diffLabel = '';
+  if (task.status === 'done' || task.status === 'skipped') {
+    const diff = Math.round(task.actualSec - task.plannedSec);
+    const abs = Math.abs(diff);
+    if (abs <= 3) {
+      diffLabel = `<span class="task-diff zero">±0</span>`;
+    } else {
+      const cls = diff > 0 ? 'over' : 'under';
+      const sign = diff > 0 ? '+' : '−';
+      diffLabel = `<span class="task-diff ${cls}">${sign}${fmt(abs)}</span>`;
+    }
+  }
+
+  const delBtn = task.status === 'pending' ? `<button class="task-delete" title="删除">×</button>` : '';
+
+  return `<div class="task-item ${task.status}" data-id="${task.id}">
+    <div class="task-icon">${icon}</div>
+    <div class="task-name">${escapeHtml(task.name)}</div>
+    <div class="task-planned">${fmt(task.plannedSec)}</div>
+    ${diffLabel}
+    ${delBtn}
+  </div>`;
+}
+
+function renderQueue() {
+  // Preserve edit input values + focus across re-renders
+  let preserved = null;
+  if (state.editingTaskId !== null) {
+    const row = els.queueList.querySelector(`.task-item.editing[data-id="${state.editingTaskId}"]`);
+    if (row) {
+      const nameEl = row.querySelector('.edit-name');
+      const minEl = row.querySelector('.edit-min');
+      const secEl = row.querySelector('.edit-sec');
+      if (nameEl && minEl && secEl) {
+        const active = document.activeElement;
+        let focusKey = null, selStart = null, selEnd = null;
+        if (active === nameEl) focusKey = 'name';
+        else if (active === minEl) focusKey = 'min';
+        else if (active === secEl) focusKey = 'sec';
+        if (focusKey) {
+          try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch(e) {}
+        }
+        preserved = {
+          name: nameEl.value, min: minEl.value, sec: secEl.value,
+          focusKey, selStart, selEnd,
+        };
+      }
+    }
+  }
+
+  if (state.tasks.length === 0) {
+    els.queueList.innerHTML = '<div class="empty-queue">还没有任务<br>👇 在下方添加</div>';
+  } else {
+    els.queueList.innerHTML = state.tasks.map(taskRowHtml).join('');
+  }
+
+  if (preserved && state.editingTaskId !== null) {
+    const row = els.queueList.querySelector(`.task-item.editing[data-id="${state.editingTaskId}"]`);
+    if (row) {
+      const nameEl = row.querySelector('.edit-name');
+      const minEl = row.querySelector('.edit-min');
+      const secEl = row.querySelector('.edit-sec');
+      if (nameEl && minEl && secEl) {
+        nameEl.value = preserved.name;
+        minEl.value = preserved.min;
+        secEl.value = preserved.sec;
+        const focusEl = { name: nameEl, min: minEl, sec: secEl }[preserved.focusKey];
+        if (focusEl) {
+          focusEl.focus();
+          if (preserved.selStart !== null) {
+            try { focusEl.setSelectionRange(preserved.selStart, preserved.selEnd); } catch(e) {}
+          }
+        }
+      }
+    }
+  }
+}
+
+function renderTick() {
+  const t = currentTask();
+  els.body.classList.toggle('running', state.running);
+
+  const pending = state.tasks.filter(x => x.status === 'pending' || x.status === 'active').length;
+  els.headerTotals.textContent = `${state.tasks.length} 项 · ${pending} 待办`;
+
+  const overrun = t ? isOverrun() : false;
+  const poolValue = livePool();
+
+  if (t) {
+    const elapsed = currentElapsed();
+    els.currentTaskName.textContent = t.name;
+    els.currentTaskName.classList.remove('empty');
+    if (overrun) {
+      els.currentLabel.textContent = 'DRAINING';
+      els.countdown.textContent = fmt(poolValue);
+    } else {
+      els.currentLabel.textContent = state.running ? '进行中' : '已暂停';
+      els.countdown.textContent = fmt(Math.max(0, t.plannedSec - elapsed));
+    }
+    els.progressFill.style.width = Math.min(100, (elapsed / t.plannedSec) * 100) + '%';
+    els.elapsed.textContent = fmt(elapsed);
+    els.timerDisplay.classList.toggle('overtime', overrun);
+  } else {
+    const isEmpty = state.tasks.length === 0;
+    const allDone = !isEmpty && state.tasks.every(x => x.status !== 'pending');
+    els.currentLabel.textContent = isEmpty ? '空' : (allDone ? '完成' : '就绪');
+    els.currentTaskName.textContent = isEmpty ? '添加任务后开始' : (allDone ? '🎉 全部完成' : '点击开始');
+    els.currentTaskName.classList.add('empty');
+    els.countdown.textContent = fmt(totalPlanned());
+    els.progressFill.style.width = allDone ? '100%' : '0%';
+    els.elapsed.textContent = '00:00';
+    els.timerDisplay.classList.remove('overtime');
+  }
+
+  els.totalRemaining.textContent = fmt(totalRemaining());
+  els.progressCount.textContent = `${completedCount()}/${state.tasks.length}`;
+
+  els.poolValue.textContent = poolValue > 0 ? '+' + fmt(poolValue) : '0:00';
+  els.pool.classList.remove('positive', 'draining');
+  if (overrun && poolValue > 0) els.pool.classList.add('draining');
+  else if (poolValue > 0) els.pool.classList.add('positive');
+
+  if (state.running) {
+    els.btnToggle.textContent = '⏸ 暂停';
+    els.btnToggle.classList.remove('primary');
+  } else {
+    els.btnToggle.textContent = state.currentIdx === -1 ? '▶ 开始' : '▶ 继续';
+    els.btnToggle.classList.add('primary');
+  }
+
+  const hasActive = state.currentIdx >= 0;
+  els.btnDone.disabled = !hasActive;
+  els.btnExtend.disabled = !hasActive;
+  els.btnSkip.disabled = !hasActive;
+  els.btnToggle.disabled = state.tasks.length === 0;
+}
+
+function render() {
+  renderTick();
+  renderQueue();
+}
+
+// ---------- Persistence ----------
+function save() {
+  try {
+    localStorage.setItem('tq_state_v2', JSON.stringify({
+      tasks: state.tasks.map(t => ({...t, status: t.status === 'active' ? 'pending' : t.status})),
+      surplusPool: state.surplusPool,
+      nextId,
+    }));
+  } catch (e) {}
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem('tq_state_v2');
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0) {
+      state.tasks = data.tasks;
+      state.surplusPool = typeof data.surplusPool === 'number' ? data.surplusPool : 0;
+      nextId = data.nextId || (Math.max(0, ...state.tasks.map(t => t.id)) + 1);
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function saveAndRender() { save(); render(); }
+
+// ---------- Tick ----------
+setInterval(() => {
+  if (state.running && currentTask()) {
+    const t = currentTask();
+    const now = Date.now();
+    const elapsed = currentElapsed();
+    const inOverrun = elapsed > t.plannedSec;
+
+    if (inOverrun && state.taskLastTickTime !== null) {
+      const dt = Math.min(0.5, (now - state.taskLastTickTime) / 1000);
+      state.taskPoolConsumed = Math.min(state.taskInitialPool, state.taskPoolConsumed + dt);
+    }
+    state.taskLastTickTime = now;
+
+    const poolLeft = state.taskInitialPool - state.taskPoolConsumed;
+    if (elapsed >= t.plannedSec && poolLeft <= 0.05) {
+      finishCurrent('timeout');
+      return;
+    }
+    renderTick();
+  } else if (state.taskLastTickTime !== null) {
+    state.taskLastTickTime = null;
+  }
+}, 250);
+
+// ---------- Events ----------
+els.btnToggle.addEventListener('click', () => state.running ? pauseQueue() : startQueue());
+els.btnDone.addEventListener('click', () => finishCurrent('manual'));
+els.btnSkip.addEventListener('click', skipCurrent);
+els.btnExtend.addEventListener('click', extendCurrent);
+els.btnClear.addEventListener('click', clearAll);
+els.btnAdd.addEventListener('click', addTask);
+[els.inputName, els.inputMin, els.inputSec].forEach(el => {
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
+});
+
+// Queue list — delegated click for edit / save / cancel / delete
+els.queueList.addEventListener('click', e => {
+  const t = e.target;
+  if (t.classList.contains('edit-save')) {
+    e.stopPropagation();
+    saveEdit();
+    return;
+  }
+  if (t.classList.contains('edit-cancel')) {
+    e.stopPropagation();
+    cancelEdit();
+    return;
+  }
+  if (t.classList.contains('task-delete')) {
+    e.stopPropagation();
+    const item = t.closest('.task-item');
+    if (item) deleteTask(parseInt(item.dataset.id));
+    return;
+  }
+  if (t.tagName === 'INPUT') return; // let inputs handle their own focus
+  const item = t.closest('.task-item');
+  if (!item || !item.dataset.id) return;
+  if (item.classList.contains('editing')) return;
+  const id = parseInt(item.dataset.id);
+  if (state.editingTaskId !== null) {
+    if (!saveEdit()) return; // current edit invalid, don't switch
+  }
+  startEdit(id);
+});
+
+// Queue list — delegated keydown for Enter / Esc in edit inputs
+els.queueList.addEventListener('keydown', e => {
+  if (state.editingTaskId === null) return;
+  if (e.target.tagName !== 'INPUT') return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    saveEdit();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelEdit();
+  }
+});
+
+// Wake lock (best-effort)
+let wakeLock = null;
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.running) requestWakeLock();
+});
+
+// ---------- Init ----------
+load();
+render();
+</script>
+</body>
+</html>
