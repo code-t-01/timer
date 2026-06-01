@@ -40,9 +40,26 @@ body {
 header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   margin-bottom: 20px;
 }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.day-btn {
+  padding: 7px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.day-btn:hover { background: rgba(96, 211, 148, 0.25); }
 
 h1 {
   font-size: 17px;
@@ -618,7 +635,10 @@ body.running .task-item.active .task-icon {
 
 <header>
   <h1>计时队列</h1>
-  <div class="totals-mini" id="header-totals">— 项</div>
+  <div class="header-right">
+    <span class="totals-mini" id="header-totals">— 项</span>
+    <button id="btn-complete-day" class="day-btn" title="结束一整天并庆祝">完成今天</button>
+  </div>
 </header>
 
 <div class="timer-display" id="timer-display">
@@ -696,6 +716,8 @@ const state = {
   // Drag reorder
   dragging: false,
   suppressClick: false,
+  // 当天累计（清空不清零；点“完成今天”或隔天才重置）
+  dayStats: { date: null, tasksDone: 0, totalSpent: 0 },
 };
 let nextId = 100;
 
@@ -714,6 +736,7 @@ const els = {
   totalRemaining: $('total-remaining'),
   progressCount: $('progress-count'),
   headerTotals: $('header-totals'),
+  btnCompleteDay: $('btn-complete-day'),
   btnToggle: $('btn-toggle'),
   btnDone: $('btn-done'),
   btnExtend: $('btn-extend'),
@@ -793,6 +816,17 @@ function completedCount() {
   return state.tasks.filter(t => t.status === 'done' || t.status === 'skipped').length;
 }
 
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+function ensureDayStats() {
+  const today = todayStr();
+  if (!state.dayStats || state.dayStats.date !== today) {
+    state.dayStats = { date: today, tasksDone: 0, totalSpent: 0 }; // 隔天自动重置
+  }
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -830,11 +864,11 @@ function vibrate(pattern) {
 }
 
 let bannerTimer = null;
-function notify(text) {
+function notify(text, duration) {
   els.banner.textContent = text;
   els.banner.classList.add('show');
   clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => els.banner.classList.remove('show'), 2400);
+  bannerTimer = setTimeout(() => els.banner.classList.remove('show'), duration || 2400);
   if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification('计时队列', { body: text, silent: true }); } catch(e) {}
   }
@@ -920,10 +954,9 @@ function endQueue(allDone) {
   state.taskPoolConsumed = 0;
   state.taskLastTickTime = null;
   if (allDone) {
-    chime('done');
-    vibrate([200, 100, 200, 100, 400]);
-    const poolNote = state.surplusPool > 0 ? ` (剩余盈余 +${fmt(state.surplusPool)})` : '';
-    notify(`全部完成 🎉${poolNote}`);
+    chime('next');        // 本轮结束：柔和提示，不庆祝、不显示总时间
+    vibrate(80);
+    notify('本轮完成 ✓ · 可清空后再来一轮');
   }
 }
 
@@ -934,6 +967,9 @@ function finishCurrent(reason) {
   const banked = commitTaskPool(elapsed, t.plannedSec);
   t.actualSec = elapsed;
   t.status = 'done';
+  ensureDayStats();                                  // 计入当天累计（清空不影响）
+  state.dayStats.tasksDone += 1;
+  state.dayStats.totalSpent += Math.round(elapsed);
   const nextIdx = state.tasks.findIndex((tt, i) => i > state.currentIdx && tt.status === 'pending');
   if (nextIdx === -1) {
     endQueue(true);
@@ -990,6 +1026,20 @@ function clearAll() {
   state.taskLastTickTime = null;
   state.editingTaskId = null;
   saveAndRender();
+}
+
+function completeDay() {
+  ensureDayStats();
+  const { tasksDone, totalSpent } = state.dayStats;
+  chime('done');
+  vibrate([200, 100, 200, 100, 400]);
+  if (tasksDone > 0) {
+    notify(`🎉 今天辛苦了 · 完成 ${tasksDone} 项 · 累计 ${fmt(totalSpent)}`, 4500);
+  } else {
+    notify('🎉 今天辛苦了', 4500);
+  }
+  state.dayStats = { date: todayStr(), tasksDone: 0, totalSpent: 0 }; // 归零，开启新一天
+  save();
 }
 
 function addTask() {
@@ -1209,10 +1259,10 @@ function renderTick() {
   } else {
     const isEmpty = state.tasks.length === 0;
     const allDone = !isEmpty && state.tasks.every(x => x.status !== 'pending');
-    els.currentLabel.textContent = isEmpty ? '空' : (allDone ? '完成' : '就绪');
-    els.currentTaskName.textContent = isEmpty ? '添加任务后开始' : (allDone ? '🎉 全部完成' : '点击开始');
+    els.currentLabel.textContent = isEmpty ? '空' : (allDone ? '本轮完成' : '就绪');
+    els.currentTaskName.textContent = isEmpty ? '添加任务后开始' : (allDone ? '本轮完成 ✓' : '点击开始');
     els.currentTaskName.classList.add('empty');
-    els.countdown.textContent = fmt(totalPlanned());
+    els.countdown.textContent = (allDone || isEmpty) ? fmt(0) : fmt(totalPlanned());
     els.progressFill.style.width = allDone ? '100%' : '0%';
     els.elapsed.textContent = '00:00';
     els.timerDisplay.classList.remove('overtime');
@@ -1252,6 +1302,7 @@ function save() {
     localStorage.setItem('tq_state_v2', JSON.stringify({
       tasks: state.tasks.map(t => ({...t, status: t.status === 'active' ? 'pending' : t.status})),
       surplusPool: state.surplusPool,
+      dayStats: state.dayStats,
       nextId,
     }));
   } catch (e) {}
@@ -1265,6 +1316,7 @@ function load() {
     if (data && Array.isArray(data.tasks)) {
       state.tasks = data.tasks.map(t => ({ ...t, spentSec: 0 })); // 空列表也尊重；重新加载视为新一轮，清掉临时进度
       state.surplusPool = typeof data.surplusPool === 'number' ? data.surplusPool : 0;
+      if (data.dayStats && data.dayStats.date) state.dayStats = data.dayStats;
       nextId = data.nextId || (state.tasks.length ? Math.max(0, ...state.tasks.map(t => t.id)) + 1 : 100);
       return true;
     }
@@ -1305,6 +1357,7 @@ els.btnDone.addEventListener('click', () => finishCurrent('manual'));
 els.btnSkip.addEventListener('click', skipCurrent);
 els.btnExtend.addEventListener('click', extendCurrent);
 els.btnClear.addEventListener('click', clearAll);
+els.btnCompleteDay.addEventListener('click', completeDay);
 els.btnAdd.addEventListener('click', addTask);
 [els.inputName, els.inputMin, els.inputSec].forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
