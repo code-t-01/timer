@@ -481,12 +481,18 @@ body.running .task-item.active .task-icon {
 /* ---------- Add task ---------- */
 .add-task {
   display: flex;
-  gap: 6px;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   background: var(--surface);
   border-radius: 12px;
-  padding: 6px;
+  padding: 8px;
   border: 1px solid var(--border);
+}
+
+.add-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .add-task input {
@@ -495,17 +501,23 @@ body.running .task-item.active .task-icon {
   color: var(--text);
   font-family: inherit;
   font-size: 15px;
-  padding: 10px 6px;
+  padding: 11px 8px;
   outline: none;
   min-width: 0;
 }
 
-.add-task input[type=text] { flex: 1; }
+.add-task input[type=text] {
+  flex: 1;
+  background: var(--surface-2);
+  border-radius: 9px;
+}
 .add-task input[type=number] {
-  width: 44px;
-  text-align: right;
+  width: 46px;
+  text-align: center;
   font-family: 'SF Mono', Menlo, monospace;
   font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  border-radius: 9px;
   -moz-appearance: textfield;
 }
 .add-task input[type=number]::-webkit-outer-spin-button,
@@ -517,19 +529,45 @@ body.running .task-item.active .task-icon {
 .add-task .unit {
   color: var(--muted);
   font-size: 12px;
-  margin-right: 2px;
+  flex-shrink: 0;
 }
 
-.add-task button {
-  padding: 10px 14px;
+#btn-add {
+  padding: 11px 18px;
   background: var(--accent-dim);
   color: var(--accent);
   font-weight: 600;
   font-size: 14px;
   border-radius: 9px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+#btn-add:hover { background: rgba(96, 211, 148, 0.25); }
 
-.add-task button:hover { background: rgba(96, 211, 148, 0.25); }
+.step-btn {
+  width: 38px;
+  padding: 11px 0;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.step-btn:hover { background: var(--border); }
+
+.step-15 {
+  width: auto;
+  padding: 11px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.step-15:hover { background: rgba(96, 211, 148, 0.25); }
+
+.time-spacer { flex: 1; }
 
 /* ---------- Banner ---------- */
 .banner {
@@ -616,12 +654,20 @@ body.running .task-item.active .task-icon {
 </div>
 
 <div class="add-task">
-  <input type="text" id="input-name" placeholder="任务名" autocomplete="off">
-  <input type="number" id="input-minutes" placeholder="0" min="0" step="1">
-  <span class="unit">分</span>
-  <input type="number" id="input-seconds" placeholder="0" min="0" max="59" step="5">
-  <span class="unit">秒</span>
-  <button id="btn-add">添加</button>
+  <div class="add-row">
+    <input type="text" id="input-name" placeholder="任务名" autocomplete="off">
+    <button id="btn-add">添加</button>
+  </div>
+  <div class="add-row">
+    <button class="step-btn" id="btn-min-down" title="减 1 分钟">−</button>
+    <input type="number" id="input-minutes" placeholder="0" min="0" step="1">
+    <span class="unit">分</span>
+    <button class="step-btn" id="btn-min-up" title="加 1 分钟">+</button>
+    <span class="time-spacer"></span>
+    <input type="number" id="input-seconds" placeholder="0" min="0" max="59" step="5">
+    <span class="unit">秒</span>
+    <button class="step-btn step-15" id="btn-sec-15" title="加 15 秒">+15秒</button>
+  </div>
 </div>
 
 <div class="banner" id="banner">下一项！</div>
@@ -674,6 +720,9 @@ const els = {
   btnSkip: $('btn-skip'),
   btnClear: $('btn-clear'),
   btnAdd: $('btn-add'),
+  btnMinDown: $('btn-min-down'),
+  btnMinUp: $('btn-min-up'),
+  btnSec15: $('btn-sec-15'),
   inputName: $('input-name'),
   inputMin: $('input-minutes'),
   inputSec: $('input-seconds'),
@@ -1260,6 +1309,27 @@ els.btnAdd.addEventListener('click', addTask);
 [els.inputName, els.inputMin, els.inputSec].forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
 });
+
+// 时间快捷按钮
+function setTimeInputs(min, sec) {
+  els.inputMin.value = min > 0 ? String(min) : '';
+  els.inputSec.value = sec > 0 ? String(sec) : '';
+}
+function bumpMinutes(delta) {
+  const min = Math.max(0, (parseInt(els.inputMin.value) || 0) + delta);
+  setTimeInputs(min, parseInt(els.inputSec.value) || 0);
+  vibrate(8);
+}
+function add15Seconds() {
+  let min = parseInt(els.inputMin.value) || 0;
+  let sec = (parseInt(els.inputSec.value) || 0) + 15;
+  if (sec >= 60) { min += Math.floor(sec / 60); sec %= 60; } // 满 60 进位到分钟
+  setTimeInputs(min, sec);
+  vibrate(8);
+}
+els.btnMinDown.addEventListener('click', () => bumpMinutes(-1));
+els.btnMinUp.addEventListener('click', () => bumpMinutes(1));
+els.btnSec15.addEventListener('click', add15Seconds);
 
 // Queue list — delegated click for edit / save / cancel / delete
 els.queueList.addEventListener('click', e => {
